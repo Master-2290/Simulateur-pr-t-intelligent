@@ -1,0 +1,24 @@
+# === GLOBAL ===
+.DS_Store
+.env
+.env.local
+*.log
+
+# === FRONTEND (React) ===
+# On ajoute le préfixe "frontend/" pour cibler le sous-dossier
+frontend/node_modules/
+frontend/build/
+frontend/coverage/
+frontend/.pnp
+frontend/.pnp.js
+
+# === BACKEND (Python/FastAPI) ===
+# On ajoute le préfixe "backend/" pour cibler le sous-dossier
+backend/__pycache__/
+backend/venv/
+backend/.venv/
+backend/*.pyc
+
+# === IDE ===
+.vscode/
+.idea/

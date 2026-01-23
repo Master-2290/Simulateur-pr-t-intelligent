@@ -1,0 +1,5 @@
+/* Nettoyage pour éviter les erreurs de compilation */
+body {
+  margin: 0;
+  background-color: #f8fafc; /* Couleur slate-50 de Tailwind */
+}
