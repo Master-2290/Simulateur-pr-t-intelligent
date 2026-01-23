@@ -18,6 +18,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# MISE À JOUR : Modèle pour inclure les données client du formulaire
+
+
+class ClientInfo(BaseModel):
+    nom: Optional[str] = ""
+    prenom: Optional[str] = ""
+    dateNaissance: Optional[str] = ""
+    adresse: Optional[str] = ""
+    ville: Optional[str] = ""
+    cp: Optional[str] = ""
+    email: Optional[str] = ""
+    telephone: Optional[str] = ""
+    etatCivil: Optional[str] = ""
+    profession: Optional[str] = ""
+    revenu: Optional[str] = ""
+
 
 class LoanInput(BaseModel):
     montant: Optional[float] = None
@@ -26,6 +42,8 @@ class LoanInput(BaseModel):
     mensualite: Optional[float] = None
     type_taux: str = "fixe"
     changements_taux: Optional[Dict[int, float]] = None
+    # On permet de recevoir les infos client mais on ne les utilise que pour l'export si besoin
+    client: Optional[ClientInfo] = None
 
 
 @app.post("/calculer")
@@ -37,49 +55,34 @@ async def calculer_pret(data: LoanInput):
         n = data.duree_mois if data.duree_mois and data.duree_mois > 0 else None
         p = data.mensualite if data.mensualite and data.mensualite > 0 else None
 
-        # Conversion du taux en mensuel (on en a besoin pour tous les calculs)
         t = (t_annuel / 100) / 12 if t_annuel else None
 
-        # 2. LOGIQUE INTELLIGENTE DE RÉSOLUTION
-
-        # Cas A : Calcul du MONTANT (combien je peux emprunter)
+        # 2. LOGIQUE DE RÉSOLUTION (Inchangée)
         if m is None and all([t, n, p]):
             m = p * (1 - (1 + t)**-n) / t
-
-        # Cas B : Calcul de la DURÉE (pendant combien de temps)
         elif n is None and all([m, t, p]):
-            # Sécurité : la mensualité doit être supérieure aux intérêts du premier mois
             if p <= (m * t):
                 raise ValueError(
                     "La mensualité est trop faible pour couvrir les intérêts.")
-
-            # Formule : n = -log(1 - (r*M)/P) / log(1 + r)
             n_brut = -math.log(1 - (t * m) / p) / math.log(1 + t)
-            n = math.ceil(n_brut)  # On arrondit au mois supérieur
-
-        # Cas C : Calcul de la MENSUALITÉ (combien je vais payer)
+            n = math.ceil(n_brut)
         elif p is None and all([m, t, n]):
             p = (m * t) / (1 - (1 + t)**-n)
-
-        # Cas D : Calcul du TAUX (approximation simple ou erreur si non fourni)
         elif t_annuel is None:
-            # Le calcul exact du taux demande une méthode itérative (Newton).
-            # Pour l'instant, on demande le taux.
-            raise ValueError(
-                "Le taux annuel est requis pour effectuer les calculs.")
+            raise ValueError("Le taux annuel est requis.")
 
-        # Vérification finale des données nécessaires
         if any(v is None for v in [m, n, p]):
-            raise ValueError(
-                "Informations insuffisantes. Remplissez au moins 3 champs.")
+            raise ValueError("Informations insuffisantes.")
 
-        # 3. GÉNÉRATION DU TABLEAU D'AMORTISSEMENT
+        # 3. GÉNÉRATION DU TABLEAU ET CALCUL INTÉRÊTS TOTAUX
         echeancier = []
         solde = m
+        total_interets_cumules = 0  # Nouveau calcul
+
         for mois in range(1, n + 1):
             interet = solde * t
+            total_interets_cumules += interet
 
-            # Ajustement pour le dernier mois
             if mois == n:
                 capital = solde
                 p_ajustee = capital + interet
@@ -102,7 +105,9 @@ async def calculer_pret(data: LoanInput):
                 "montant": round(m, 2),
                 "taux_annuel": round(t_annuel, 2),
                 "duree_mois": n,
-                "mensualite": round(p, 2)
+                "mensualite": round(p, 2),
+                # Ajouté pour le frontend
+                "total_interets": round(total_interets_cumules, 2)
             },
             "echeancier": echeancier
         }
@@ -111,27 +116,20 @@ async def calculer_pret(data: LoanInput):
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         print(f"Erreur système: {e}")
-        raise HTTPException(
-            status_code=500, detail="Une erreur interne est survenue.")
+        raise HTTPException(status_code=500, detail="Erreur interne.")
 
 
 @app.post("/export/excel")
 async def export_excel(data: List[Dict]):
-    # Transformer les données reçues en DataFrame Pandas
     df = pd.DataFrame(data)
-
-    # Créer un fichier Excel en mémoire
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Amortissement')
     output.seek(0)
-
-    headers = {
-        'Content-Disposition': 'attachment; filename="amortissement.xlsx"'
-    }
+    headers = {'Content-Disposition': 'attachment; filename="amortissement.xlsx"'}
     return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
-
 
 if __name__ == "__main__":
     import uvicorn
+    # N'oublie pas de vérifier ton IP ici pour le test téléphone
     uvicorn.run(app, host="0.0.0.0", port=8000)
