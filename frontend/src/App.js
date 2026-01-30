@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import axios from "axios";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import Historique from "./components/Historique"; // On importe le composant historique
 
 import {
   AreaChart,
@@ -24,6 +25,7 @@ import {
   User,
   Home,
   Mail,
+  History, // Ajout de l'icône
 } from "lucide-react";
 
 function App() {
@@ -53,13 +55,17 @@ function App() {
     taux: "",
     duree: "",
     mensualite: "",
+    tauxAssurance: "0.36",
     type: "fixe",
   });
 
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [currentSimId, setCurrentSimId] = useState(null); // Stockage de l'ID dynamique
 
-  const BASE_URL = "http://192.168.1.68:8000";
+  const BASE_URL = "http://localhost:8000";
+
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleCalculate = async () => {
     setLoading(true);
@@ -68,23 +74,32 @@ function App() {
       taux_annuel: formData.taux ? parseFloat(formData.taux) : null,
       duree_mois: formData.duree ? parseInt(formData.duree) : null,
       mensualite: formData.mensualite ? parseFloat(formData.mensualite) : null,
+      taux_assurance: parseFloat(formData.tauxAssurance),
+      client: clientData,
       type_taux: formData.type,
     };
 
     try {
       const response = await axios.post(`${BASE_URL}/calculer`, payload);
       setResult(response.data);
+      // On récupère l'ID généré par le backend
+      if (response.data.id) {
+        setCurrentSimId(response.data.id);
+      }
+      if (response.status === 200) {
+        setRefreshKey((old) => old + 1); // Force le composant Historique à se recharger
+      }
     } catch (error) {
       alert(error.response?.data?.detail || "Erreur de calcul.");
     } finally {
       setLoading(false);
     }
   };
+  <Historique baseUrl={BASE_URL} key={refreshKey} />;
 
   const exportPDF = () => {
     const doc = new jsPDF();
 
-    // --- STYLE CONTRAT PRO ---
     doc.setFont("helvetica", "bold");
     doc.setFontSize(20);
     doc.setTextColor(37, 99, 235);
@@ -96,7 +111,6 @@ function App() {
       align: "center",
     });
 
-    // INFOS CLIENT
     doc.setFontSize(12);
     doc.setTextColor(0);
     doc.text("ENTRE LES SOUSSIGNÉS :", 14, 45);
@@ -127,17 +141,17 @@ function App() {
     ).toFixed(2)}$.`;
     doc.text(doc.splitTextToSize(synthese, 180), 14, 82);
 
-    // TABLEAU
     const tableRows = result.echeancier.map((item) => [
       item.mois,
       `${item.mensualite}$`,
       `${item.interet}$`,
+      `${item.assurance}$`,
       `${item.capital}$`,
       `${item.solde}$`,
     ]);
 
     autoTable(doc, {
-      head: [["Mois", "Mensualité", "Intérêt", "Capital", "Solde"]],
+      head: [["Mois", "Mensualité", "Intérêt", "Intérêt", "Capital", "Solde"]],
       body: tableRows,
       startY: 105,
       theme: "striped",
@@ -148,17 +162,38 @@ function App() {
   };
 
   const exportExcel = async () => {
-    const response = await axios.post(
-      `${BASE_URL}/export/excel`,
-      result.echeancier,
-      { responseType: "blob" }
-    );
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", "amortissement.xlsx");
-    document.body.appendChild(link);
-    link.click();
+    // 1. Sécurité : vérifier si on a un ID valide
+    if (!currentSimId) {
+      alert(
+        "Erreur : Aucune simulation trouvée en base de données. Veuillez relancer le calcul.",
+      );
+      return;
+    }
+
+    try {
+      console.log("Tentative d'export pour l'ID:", currentSimId);
+
+      const response = await axios.post(
+        `${BASE_URL}/export/excel/${currentSimId}`,
+        result.echeancier,
+        { responseType: "blob" },
+      );
+
+      // 2. Création du lien de téléchargement
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `simulation_${currentSimId}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+
+      // Nettoyage
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Détails de l'erreur 404:", error.response);
+      alert("Le serveur n'a pas trouvé le point d'accès pour l'export Excel.");
+    }
   };
 
   return (
@@ -167,7 +202,7 @@ function App() {
       <nav className="bg-white shadow-md p-4 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-2 font-black text-blue-900 text-xl">
-            <Calculator className="text-blue-600" /> Mon Prêt Hypothécaire
+            Mon Prêt Hypothécaire
           </div>
           <div className="flex gap-6 font-bold text-slate-600">
             <button
@@ -177,6 +212,15 @@ function App() {
               }
             >
               Accueil
+            </button>
+            {/* Nouveau bouton Historique */}
+            <button
+              onClick={() => setActiveTab("historique")}
+              className={
+                activeTab === "historique" ? "text-blue-600 underline" : ""
+              }
+            >
+              Historique
             </button>
             <button
               onClick={() => setActiveTab("propos")}
@@ -191,14 +235,14 @@ function App() {
       </nav>
 
       <div className="p-4 md:p-8">
+        {/* ONGLET ACCUEIL (TON CODE ORIGINAL) */}
         {activeTab === "accueil" && (
           <div className="max-w-7xl mx-auto space-y-8">
-            {/* PAGE INFO INITIALE */}
-            {!result && activeTab === "accueil" && (
+            {!result && (
               <div className="bg-blue-900 text-white p-8 rounded-3xl mb-8 flex flex-col md:flex-row items-center gap-8">
                 <div className="flex-1">
                   <h2 className="text-4xl font-black mb-4">
-                    Plateforme de Simulation de Prêt
+                    Plateforme de Simulation de Prêt Hypothécaire
                   </h2>
                   <p className="text-blue-100 text-lg">
                     Obtenez une offre personnalisée et exportez votre tableau
@@ -210,7 +254,6 @@ function App() {
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* FORMULAIRE CLIENT ET CONFIGURATION */}
               <div className="lg:col-span-5 space-y-6">
                 <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-200">
                   <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-900">
@@ -220,7 +263,6 @@ function App() {
                     <input
                       className="p-3 border rounded-xl"
                       placeholder="Nom*"
-                      required
                       onChange={(e) =>
                         setClientData({ ...clientData, nom: e.target.value })
                       }
@@ -228,7 +270,6 @@ function App() {
                     <input
                       className="p-3 border rounded-xl"
                       placeholder="Prénom*"
-                      required
                       onChange={(e) =>
                         setClientData({ ...clientData, prenom: e.target.value })
                       }
@@ -339,7 +380,7 @@ function App() {
                         <Info
                           size={14}
                           className="text-slate-400 cursor-help"
-                          title="Le capital emprunté à la banque."
+                          title="Le capital emprunté."
                         />
                       </label>
                       <input
@@ -357,7 +398,7 @@ function App() {
                         <Info
                           size={14}
                           className="text-slate-400 cursor-help"
-                          title="Somme payée chaque mois (Capital + Intérêts)."
+                          title="Somme payée chaque mois."
                         />
                       </label>
                       <input
@@ -375,12 +416,7 @@ function App() {
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="flex items-center gap-2 text-sm font-semibold mb-1">
-                          Taux (%){" "}
-                          <Info
-                            size={14}
-                            className="text-slate-400 cursor-help"
-                            title="Taux annuel brut appliqué au prêt."
-                          />
+                          Taux (%)
                         </label>
                         <input
                           type="number"
@@ -394,12 +430,7 @@ function App() {
                       </div>
                       <div>
                         <label className="flex items-center gap-2 text-sm font-semibold mb-1">
-                          Durée (Mois){" "}
-                          <Info
-                            size={14}
-                            className="text-slate-400 cursor-help"
-                            title="Nombre total de mois pour rembourser."
-                          />
+                          Durée (Mois)
                         </label>
                         <input
                           type="number"
@@ -422,33 +453,43 @@ function App() {
                 </div>
               </div>
 
-              {/* RÉSULTATS */}
               <div className="lg:col-span-7 space-y-6">
                 {result ? (
                   <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-blue-600 text-white p-6 rounded-2xl shadow-lg">
-                        <p className="text-blue-100 text-sm">
-                          Coût total des Intérêts
+                    {/* Cartes de synthèse : Passé de 2 à 3 colonnes pour inclure l'assurance */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-white p-6 rounded-2xl shadow-md border border-slate-200">
+                        <p className="text-slate-500 text-sm font-bold uppercase">
+                          Total Intérêts
                         </p>
-                        <p className="text-3xl font-black">
-                          {(
-                            result.params_finaux.mensualite *
-                              result.params_finaux.duree_mois -
-                            result.params_finaux.montant
-                          ).toLocaleString()}{" "}
+                        <p className="text-2xl font-black text-rose-500">
+                          {result.params_finaux.total_interets.toLocaleString()}{" "}
                           $
                         </p>
                       </div>
+
                       <div className="bg-white p-6 rounded-2xl shadow-md border border-slate-200">
-                        <p className="text-slate-500 text-sm">
-                          Amortissement total
+                        <p className="text-slate-500 text-sm font-bold uppercase">
+                          Total Assurance
                         </p>
-                        <p className="text-3xl font-black text-blue-900">
-                          {result.params_finaux.montant.toLocaleString()} $
+                        <p className="text-2xl font-black text-violet-500">
+                          {result.params_finaux.total_assurance.toLocaleString()}{" "}
+                          $
+                        </p>
+                      </div>
+
+                      <div className="bg-blue-600 text-white p-6 rounded-2xl shadow-lg">
+                        <p className="text-blue-100 text-sm font-bold uppercase">
+                          Coût Total du Crédit
+                        </p>
+                        <p className="text-3xl font-black">
+                          {result.params_finaux.cout_total_credit.toLocaleString()}{" "}
+                          $
                         </p>
                       </div>
                     </div>
+
+                    {/* Graphique d'amortissement */}
                     <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-200 h-[400px]">
                       <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                         <TrendingUp size={20} /> Amortissement du Solde
@@ -461,7 +502,10 @@ function App() {
                           />
                           <XAxis dataKey="mois" />
                           <YAxis />
-                          <Tooltip />
+                          <Tooltip
+                            formatter={(value) => `${value.toLocaleString()} $`}
+                            labelFormatter={(label) => `Mois ${label}`}
+                          />
                           <Area
                             type="monotone"
                             dataKey="solde"
@@ -477,14 +521,13 @@ function App() {
                     <AlertCircle size={64} className="mb-4 opacity-20" />
                     <p className="text-xl font-bold text-center">
                       Remplissez vos informations et cliquez sur "Lancer la
-                      Simulation" pour voir les résultats.
+                      Simulation".
                     </p>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* TABLEAU */}
             {result && (
               <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden w-full">
                 <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
@@ -513,6 +556,9 @@ function App() {
                         <th className="p-4 font-bold">Mois</th>
                         <th className="p-4 font-bold text-right">Mensualité</th>
                         <th className="p-4 font-bold text-right">Intérêt</th>
+                        <th className="p-4 font-bold text-right text-violet-600">
+                          Assurance
+                        </th>
                         <th className="p-4 font-bold text-right">Capital</th>
                         <th className="p-4 font-bold text-right">
                           Solde restant
@@ -532,6 +578,9 @@ function App() {
                           <td className="p-4 text-right text-rose-500">
                             -{row.interet}$
                           </td>
+                          <td className="p-4 text-right text-violet-500">
+                            -{row.assurance}$
+                          </td>
                           <td className="p-4 text-right text-emerald-600">
                             +{row.capital}$
                           </td>
@@ -548,16 +597,21 @@ function App() {
           </div>
         )}
 
+        {/* NOUVEL ONGLET HISTORIQUE */}
+        {activeTab === "historique" && (
+          <div className="max-w-7xl mx-auto">
+            {/* AJOUTE baseUrl ET key ICI */}
+            <Historique baseUrl={BASE_URL} key={refreshKey} />
+          </div>
+        )}
+
+        {/* ONGLET À PROPOS */}
         {activeTab === "propos" && (
           <div className="max-w-3xl mx-auto bg-white p-12 rounded-3xl shadow-xl border border-slate-200 text-center">
-            <h2 className="text-3xl font-black text-blue-900 mb-6">
-              À propos de la plateforme
-            </h2>
+            <h2 className="text-3xl font-black text-blue-900 mb-6">À propos</h2>
             <p className="text-slate-600 text-lg mb-10 leading-relaxed">
-              Ce simulateur a été conçu pour offrir une transparence totale dans
-              le calcul des crédits immobiliers. Il utilise des algorithmes
-              financiers de haute précision pour déduire automatiquement les
-              variables manquantes de votre prêt.
+              Ce simulateur offre une transparence totale dans le calcul des
+              crédits immobiliers.
             </p>
             <div className="space-y-4">
               <div className="flex items-center justify-center gap-4 p-4 bg-slate-50 rounded-2xl">

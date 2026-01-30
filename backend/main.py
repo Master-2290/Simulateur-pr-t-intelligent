@@ -1,16 +1,33 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-import io
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-import numpy_financial as npf
+from typing import List, Dict
+import services
+from schemas import LoanInput  # On suppose que tes classes Pydantic sont là
 import pandas as pd
-from pydantic import BaseModel
-from typing import Optional, List, Dict
-import math
+import io
+from database import Base
+from starlette.responses import StreamingResponse, FileResponse
+from sqlalchemy.orm import Session
+from database import SessionLocal, engine
+import models
+import repository
+
+# Créer les tables au démarrage
+models.Base.metadata.create_all(bind=engine)
+
+# Dépendance pour la base de données
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 app = FastAPI()
 
-# Autoriser le Frontend React à communiquer avec le Backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,118 +35,190 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MISE À JOUR : Modèle pour inclure les données client du formulaire
-
-
-class ClientInfo(BaseModel):
-    nom: Optional[str] = ""
-    prenom: Optional[str] = ""
-    dateNaissance: Optional[str] = ""
-    adresse: Optional[str] = ""
-    ville: Optional[str] = ""
-    cp: Optional[str] = ""
-    email: Optional[str] = ""
-    telephone: Optional[str] = ""
-    etatCivil: Optional[str] = ""
-    profession: Optional[str] = ""
-    revenu: Optional[str] = ""
-
-
-class LoanInput(BaseModel):
-    montant: Optional[float] = None
-    taux_annuel: Optional[float] = None
-    duree_mois: Optional[int] = None
-    mensualite: Optional[float] = None
-    type_taux: str = "fixe"
-    changements_taux: Optional[Dict[int, float]] = None
-    # On permet de recevoir les infos client mais on ne les utilise que pour l'export si besoin
-    client: Optional[ClientInfo] = None
-
 
 @app.post("/calculer")
-async def calculer_pret(data: LoanInput):
+async def calculer_pret(data: LoanInput, db: Session = Depends(get_db)):
+    """
+    Endpoint principal pour le calcul de simulation de crédit.
+
+    Valide les données d'entrée via Pydantic, résout les inconnues financières 
+    et retourne l'échéancier complet avec les agrégats financiers.
+
+    Returns:
+        JSON: Paramètres finaux et tableau d'amortissement détaillé.
+    """
     try:
-        # 1. Nettoyage et récupération des entrées
-        m = data.montant if data.montant and data.montant > 0 else None
-        t_annuel = data.taux_annuel if data.taux_annuel and data.taux_annuel > 0 else None
-        n = data.duree_mois if data.duree_mois and data.duree_mois > 0 else None
-        p = data.mensualite if data.mensualite and data.mensualite > 0 else None
-
-        t = (t_annuel / 100) / 12 if t_annuel else None
-
-        # 2. LOGIQUE DE RÉSOLUTION (Inchangée)
-        if m is None and all([t, n, p]):
-            m = p * (1 - (1 + t)**-n) / t
-        elif n is None and all([m, t, p]):
-            if p <= (m * t):
-                raise ValueError(
-                    "La mensualité est trop faible pour couvrir les intérêts.")
-            n_brut = -math.log(1 - (t * m) / p) / math.log(1 + t)
-            n = math.ceil(n_brut)
-        elif p is None and all([m, t, n]):
-            p = (m * t) / (1 - (1 + t)**-n)
-        elif t_annuel is None:
-            raise ValueError("Le taux annuel est requis.")
+        # 1. Calcul des paramètres financiers
+        m, n, p, t_mensuel = services.resoudre_parametres_pret(
+            data.montant, data.taux_annuel, data.duree_mois, data.mensualite
+        )
 
         if any(v is None for v in [m, n, p]):
-            raise ValueError("Informations insuffisantes.")
+            raise ValueError("Informations insuffisantes pour le calcul.")
 
-        # 3. GÉNÉRATION DU TABLEAU ET CALCUL INTÉRÊTS TOTAUX
-        echeancier = []
-        solde = m
-        total_interets_cumules = 0  # Nouveau calcul
+        echeancier, total_int, total_assu = services.generer_echeancier(
+            m, n, p, t_mensuel)
 
-        for mois in range(1, n + 1):
-            interet = solde * t
-            total_interets_cumules += interet
+        params_finaux = {
+            "montant": round(m, 2),
+            "taux_annuel": round(data.taux_annuel if data.taux_annuel else 0, 2),
+            "duree_mois": n,
+            "mensualite": round(p, 2),
+            "total_interets": round(total_int, 2),
+            "total_assurance": round(total_assu, 2),
+            "cout_total_credit": round(total_int + total_assu, 2)
+        }
 
-            if mois == n:
-                capital = solde
-                p_ajustee = capital + interet
-            else:
-                capital = p - interet
-                p_ajustee = p
+        # 2. Sauvegarde UNIQUE et récupération de l'ID
+        # On force un client_id à 1 par défaut si data.client_id est absent pour éviter les crashs
+        c_id = data.client_id if data.client_id else 1
 
-            solde -= capital
+        new_sim = repository.save_simulation(
+            db, params_finaux, echeancier, c_id)
 
-            echeancier.append({
-                "mois": mois,
-                "mensualite": round(p_ajustee, 2),
-                "capital": round(capital, 2),
-                "interet": round(interet, 2),
-                "solde": round(max(0, solde), 2)
-            })
+        if not new_sim:
+            raise HTTPException(
+                status_code=500, detail="Erreur lors de la sauvegarde en base.")
 
+        # 3. Réponse propre pour React
         return {
-            "params_finaux": {
-                "montant": round(m, 2),
-                "taux_annuel": round(t_annuel, 2),
-                "duree_mois": n,
-                "mensualite": round(p, 2),
-                # Ajouté pour le frontend
-                "total_interets": round(total_interets_cumules, 2)
-            },
-            "echeancier": echeancier
+            "params_finaux": params_finaux,
+            "echeancier": echeancier,
+            "id": new_sim.id  # L'ID qui servira à l'export Excel
         }
 
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        print(f"Erreur système: {e}")
-        raise HTTPException(status_code=500, detail="Erreur interne.")
+        print(f"CRASH LOG: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Erreur interne: {str(e)}")
 
 
-@app.post("/export/excel")
-async def export_excel(data: List[Dict]):
-    df = pd.DataFrame(data)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Amortissement')
-    output.seek(0)
-    headers = {'Content-Disposition': 'attachment; filename="amortissement.xlsx"'}
-    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+@app.post("/capacite-emprunt")
+async def calculer_capacite(data: dict):
+    # Data attendu: mensualite_max, taux_annuel, duree_ans, taux_assurance
+    p_totale = float(data.get("mensualite_max"))
+    taux_annuel = float(data.get("taux_annuel")) / 100
+    duree_mois = int(data.get("duree_ans")) * 12
+    t_assu_annuel = float(data.get("taux_assurance")) / 100
 
-if __name__ == "__main__":
-    import uvicorn
-    # N'oublie pas de vérifier ton IP ici pour le test téléphone
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Étape A : Isoler la mensualité hors assurance
+    # Puisque Mensualité = (M * t_mensuel / (1 - (1+t_mensuel)^-n)) + (M * t_assu / 12)
+    # On factorise M pour trouver le capital max
+    t_mensuel = taux_annuel / 12
+    denominateur_pret = t_mensuel / (1 - (1 + t_mensuel)**(-duree_mois))
+    frais_assurance_mensuel = t_assu_annuel / 12
+
+    # Capital Max = Mensualité Totale / (Facteur Prêt + Facteur Assurance)
+    capital_max = p_totale / (denominateur_pret + frais_assurance_mensuel)
+
+    return {
+        "capital_empruntable": round(capital_max, 2),
+        "mensualite_hors_assurance": round(capital_max * denominateur_pret, 2),
+        "assurance_mensuelle": round(capital_max * frais_assurance_mensuel, 2)
+    }
+
+
+@app.get("/historique")
+async def lire_historique(db: Session = Depends(get_db)):
+    """
+    Récupère la liste de toutes les simulations enregistrées.
+    Inclut les simulations marquées 'is_deleted' pour gestion côté Frontend.
+    """
+    # On récupère tout pour permettre au front d'afficher la mention "Supprimé"
+    simulations = db.query(models.Simulation).all()
+    return simulations
+
+
+@app.patch("/simulation/{sim_id}/supprimer")
+async def supprimer_simulation(sim_id: int, db: Session = Depends(get_db)):
+    """
+    Effectue une suppression logique (Soft Delete).
+    La donnée reste en base mais change d'état (Point 3).
+    """
+    sim = repository.soft_delete_simulation(db, sim_id)
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation non trouvée")
+    return {"message": "Simulation marquée comme supprimée", "id": sim_id}
+
+
+@app.get("/dashboard/stats")
+async def read_stats(db: Session = Depends(get_db)):
+    """
+    Endpoint consolidé pour le Dashboard (Point 7).
+    Combine les données de la DB et l'état du Repository de fichiers.
+    """
+    # Statistiques DB
+    db_stats = repository.get_dashboard_stats(db)
+
+    # Statistiques Fichiers (Point 4)
+    repo_stats = services.get_repository_info("exports_repository/excel")
+
+    return {
+        "financial_summary": db_stats,
+        "repository_summary": repo_stats,
+        "status": "success"
+    }
+
+
+@app.post("/export/excel/{simulation_id}")
+async def export_excel(simulation_id: int, data: List[Dict]):
+    """
+    Remplace l'ancienne fonction. 
+    1. Sauvegarde le fichier dans le dossier permanent (Point 4).
+    2. Envoie le fichier au client pour téléchargement.
+    """
+
+    try:
+        # Appel au service qui fait la sauvegarde physique
+        chemin_fichier = services.sauvegarder_excel_localement(
+            data, simulation_id)
+
+        return FileResponse(
+            path=chemin_fichier,
+            filename=f"simulation_{simulation_id}.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur export: {str(e)}")
+
+# @app.post("/export/excel")
+# async def export_excel(data: List[Dict]):
+#     """
+#     Génère un fichier Excel (XLSX) à partir des données de l'échéancier.
+
+#     Transforme la structure JSON en DataFrame Pandas pour un export binaire
+#     structuré vers le client.
+
+#     Returns:
+#         StreamingResponse: Flux binaire du fichier Excel.
+#     """
+#     df = pd.DataFrame(data)
+#     output = io.BytesIO()
+#     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+#         df.to_excel(writer, index=False, sheet_name='Amortissement')
+#     output.seek(0)
+#     headers = {'Content-Disposition': 'attachment; filename="amortissement.xlsx"'}
+#     return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+
+
+# @app.post("/export/excel/{simulation_id}")
+# async def export_excel_permanent(simulation_id: int, data: List[Dict]):
+#     """
+#     Enregistre le fichier dans le repository et le renvoie pour téléchargement.
+#     """
+#     try:
+#         # 1. Sauvegarde physique dans le dossier 'exports_repository'
+#         chemin_fichier = services.sauvegarder_excel_localement(
+#             data, simulation_id)
+
+#         # 2. Renvoi du fichier au client (React)
+#         return FileResponse(
+#             path=chemin_fichier,
+#             filename=os.path.basename(chemin_fichier),
+#             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#         )
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500, detail=f"Erreur lors du stockage : {str(e)}")
