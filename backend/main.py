@@ -12,11 +12,19 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 import models
 import repository
+import os
 
+# Correction de l'URL de la base de données si nécessaire
+db_url = os.getenv("DATABASE_URL")
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
 
 # Créer les tables au démarrage
-models.Base.metadata.create_all(bind=engine)
-
+try:
+    models.Base.metadata.create_all(bind=engine)
+    print("Base de données connectée et tables créées !")
+except Exception as e:
+    print(f"ERREUR CONNEXION DB: {e}")
 # Dépendance pour la base de données
 
 

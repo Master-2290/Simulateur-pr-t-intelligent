@@ -49,7 +49,7 @@ const NavItems = ({ activeTab, setActiveTab, isMobile, closeMenu }) => {
       icon: <LayoutDashboard size={18} />,
     },
     { id: "historique", label: "Historique", icon: <History size={18} /> },
-    { id: "propos", label: "FAQ", icon: <Info size={18} /> },
+    { id: "FAQ", label: "FAQ", icon: <Info size={18} /> },
   ];
 
   return (
