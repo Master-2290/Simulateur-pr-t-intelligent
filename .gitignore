@@ -18,6 +18,8 @@ backend/__pycache__/
 backend/venv/
 backend/.venv/
 backend/*.pyc
+backend/*.db
+backend/exported_simulations/
 
 # === IDE ===
 .vscode/
