@@ -4,6 +4,12 @@ import os
 import pandas as pd
 from datetime import datetime
 
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+
+
 # Chemin vers le dossier de stockage
 EXPORT_PATH = "exported_simulations"
 
@@ -170,18 +176,83 @@ def sauvegarder_excel_localement(echeancier: list, simulation_id: int) -> str:
     return chemin_complet
 
 
+def sauvegarder_pdf_localement(echeancier: list, simulation_id: int) -> str:
+    """
+    Génère un rapport PDF de l'échéancier et le sauvegarde localement.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nom_fichier = f"simulation_{simulation_id}_{timestamp}.pdf"
+    chemin_complet = os.path.join(EXPORT_PATH, nom_fichier)
+
+    doc = SimpleDocTemplate(chemin_complet, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Titre
+    elements.append(Paragraph(
+        f"Tableau d'amortissement - Simulation #{simulation_id}", styles['Title']))
+    elements.append(Paragraph(
+        f"Généré le : {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal']))
+
+    # Préparation des données du tableau
+    data = [["Mois", "Mensualité", "Capital", "Intérêt", "Assurance", "Solde"]]
+    for row in echeancier:
+        data.append([
+            row["mois"],
+            f"{row['mensualite']:.2f}",
+            f"{row['capital']:.2f}",
+            f"{row['interet']:.2f}",
+            f"{row['assurance']:.2f}",
+            f"{row['solde']:.2f}"
+        ])
+
+    # Création du tableau PDF
+    t = Table(data)
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.blue),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+
+    elements.append(t)
+    doc.build(elements)
+
+    return chemin_complet
+
+
+# def get_repository_info(directory: str) -> dict:
+#     """
+#     Analyse le dossier de stockage pour le dashboard.
+#     """
+#     if not os.path.exists(directory):
+#         return {"file_count": 0, "total_size_mb": 0}
+
+#     files = os.listdir(directory)
+#     total_size = sum(os.path.getsize(os.path.join(directory, f))
+#                      for f in files if os.path.isfile(os.path.join(directory, f)))
+
+#     return {
+#         "file_count": len(files),
+#         "total_size_mb": round(total_size / (1024 * 1024), 2)
+#     }
+
 def get_repository_info(directory: str) -> dict:
-    """
-    Analyse le dossier de stockage pour le dashboard.
-    """
     if not os.path.exists(directory):
-        return {"file_count": 0, "total_size_mb": 0}
+        return {"pdf_count": 0, "excel_count": 0, "total_size_mb": 0}
 
     files = os.listdir(directory)
+    pdf_count = len([f for f in files if f.endswith('.pdf')])
+    excel_count = len([f for f in files if f.endswith('.xlsx')])
+
     total_size = sum(os.path.getsize(os.path.join(directory, f))
                      for f in files if os.path.isfile(os.path.join(directory, f)))
 
     return {
         "file_count": len(files),
+        "pdf_count": pdf_count,
+        "excel_count": excel_count,
         "total_size_mb": round(total_size / (1024 * 1024), 2)
     }

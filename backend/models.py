@@ -32,12 +32,16 @@ class Simulation(Base):
     client_id = Column(Integer, ForeignKey("desclients.id"))
     operateur_id = Column(Integer, ForeignKey("enumOperateur.id"))
 
+    nb_export_pdf = Column(Integer, default=0)
+    nb_export_excel = Column(Integer, default=0)
+
     # Champs techniques demandés
     date_traitement = Column(DateTime, default=datetime.datetime.utcnow)
     prix_achat = Column(Float)  # Vu sur ton image HYPOTHE.JPG
     montant_desire = Column(Float)
     taux_annuel = Column(Float)
     duree_mois = Column(Integer)
+    mensualite = Column(Float)
 
     # Point 3 : Suppression logique
     is_deleted = Column(Boolean, default=False)
@@ -55,6 +59,7 @@ class SimulationDetail(Base):
     mois = Column(Integer)
     mensualite = Column(Float)
     interet = Column(Float)
+    assurance = Column(Float)
     capital_amorti = Column(Float)
     solde_restant = Column(Float)
 

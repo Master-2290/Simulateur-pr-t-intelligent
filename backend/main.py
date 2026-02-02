@@ -1,3 +1,4 @@
+from fastapi.responses import FileResponse
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 import models
 import repository
+
 
 # Créer les tables au démarrage
 models.Base.metadata.create_all(bind=engine)
@@ -97,6 +99,27 @@ async def calculer_pret(data: LoanInput, db: Session = Depends(get_db)):
 
 @app.post("/capacite-emprunt")
 async def calculer_capacite(data: dict):
+    """
+    Calcule la capacité d'emprunt maximale d'un client en fonction d'une mensualité cible.
+
+    Cette fonction inverse la formule classique des annuités pour isoler le capital. 
+    Elle prend en compte à la fois le taux d'intérêt bancaire et le taux d'assurance 
+    pour déterminer le montant total qu'un client peut emprunter sans dépasser sa 
+    mensualité maximale.
+
+    Args:
+        data (dict): Un dictionnaire contenant les clés suivantes :
+            - mensualite_max (float): Le budget mensuel total (assurance incluse).
+            - taux_annuel (float): Le taux d'intérêt nominal annuel
+            - duree_ans (int): La durée du crédit en années.
+            - taux_assurance (float): Le taux d'assurance annuel
+
+    Returns:
+        dict: Un dictionnaire contenant les résultats arrondis :
+            - capital_empruntable (float): Le montant total du prêt possible.
+            - mensualite_hors_assurance (float): La part de la mensualité dédiée au crédit.
+            - assurance_mensuelle (float): La part de la mensualité dédiée à l'assurance.
+    """
     # Data attendu: mensualite_max, taux_annuel, duree_ans, taux_assurance
     p_totale = float(data.get("mensualite_max"))
     taux_annuel = float(data.get("taux_annuel")) / 100
@@ -128,7 +151,43 @@ async def lire_historique(db: Session = Depends(get_db)):
     """
     # On récupère tout pour permettre au front d'afficher la mention "Supprimé"
     simulations = db.query(models.Simulation).all()
-    return simulations
+
+    resultat = []
+    for sim in simulations:
+        # On cherche la mensualité dans SimulationDetail si elle n'est pas dans Simulation
+        premiere_echeance = db.query(models.SimulationDetail).filter(
+            models.SimulationDetail.simulation_id == sim.id
+        ).first()
+
+        mensualite = premiere_echeance.mensualite if premiere_echeance else 0
+
+        # On récupère TOUTES les lignes pour pouvoir faire la somme des intérêts et assurances
+        details = db.query(models.SimulationDetail).filter(
+            models.SimulationDetail.simulation_id == sim.id
+        ).all()
+
+        # Calcul des sommes AVANT de les utiliser dans le dictionnaire
+        # On utilise 0.0 par défaut si la liste est vide
+        somme_interet = sum((d.interet or 0.0)
+                            for d in details) if details else 0.0
+        somme_assurance = sum((d.assurance or 0.0)
+                              for d in details) if details else 0.0
+
+        resultat.append({
+            "id": sim.id,
+            "montant_desire": sim.montant_desire,
+            "taux_annuel": sim.taux_annuel,
+            "duree_mois": sim.duree_mois,
+            "mensualite": mensualite,
+            "total_interets": round(somme_interet, 2),
+            "total_assurance": round(somme_assurance, 2),
+            "nb_export_pdf": sim.nb_export_pdf,
+            "nb_export_excel": sim.nb_export_excel,
+            "is_deleted": sim.is_deleted,
+            "date_traitement": sim.date_traitement
+        })
+
+    return resultat
 
 
 @app.patch("/simulation/{sim_id}/supprimer")
@@ -183,6 +242,37 @@ async def export_excel(simulation_id: int, data: List[Dict]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur export: {str(e)}")
 
+
+@app.post("/export/pdf/{simulation_id}")
+async def export_pdf(simulation_id: int, data: List[Dict]):
+    """
+    1. Génère et sauvegarde le PDF localement dans /exported_simulations.
+    2. Envoie le fichier au client pour téléchargement immédiat.
+    """
+    try:
+        # Appel au service pour la génération et sauvegarde physique
+        chemin_fichier = services.sauvegarder_pdf_localement(
+            data, simulation_id)
+
+        # Incrémenter le compteur dans la base de données (optionnel mais recommandé)
+        # simulation = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
+        # if simulation:
+        #     simulation.nb_export_pdf += 1
+        #     db.commit()
+
+        return FileResponse(
+            path=chemin_fichier,
+            filename=f"simulation_{simulation_id}.pdf",
+            media_type="application/pdf"
+        )
+    except Exception as e:
+        print(f"Erreur détaillée : {str(e)}")  # les logs console
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la génération du PDF : {str(e)}"
+        )
+
+
 # @app.post("/export/excel")
 # async def export_excel(data: List[Dict]):
 #     """
@@ -222,3 +312,32 @@ async def export_excel(simulation_id: int, data: List[Dict]):
 #     except Exception as e:
 #         raise HTTPException(
 #             status_code=500, detail=f"Erreur lors du stockage : {str(e)}")
+
+@app.put("/simulations/{sim_id}/increment-export")
+async def increment_export(sim_id: int, type: str, db: Session = Depends(get_db)):
+    # On cherche la simulation par son ID
+    db_sim = db.query(models.Simulation).filter(
+        models.Simulation.id == sim_id).first()
+
+    if not db_sim:
+        raise HTTPException(status_code=404, detail="Simulation non trouvée")
+
+    # On incrémente le bon compteur selon le type envoyé ('pdf' ou 'excel')
+    if type == "pdf":
+        db_sim.nb_export_pdf += 1
+    elif type == "excel":
+        db_sim.nb_export_excel += 1
+    else:
+        raise HTTPException(status_code=400, detail="Type d'export invalide")
+
+    db.commit()
+    return {"status": "success", "pdf": db_sim.nb_export_pdf, "excel": db_sim.nb_export_excel}
+
+
+@app.get("/stats-stockage")
+async def stats_stockage():
+    """
+    Récupère le nombre de fichiers et la taille totale du dossier d'export.
+    """
+    stats = services.get_repository_info(services.EXPORT_PATH)
+    return stats
