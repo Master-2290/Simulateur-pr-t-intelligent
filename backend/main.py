@@ -33,7 +33,7 @@ app = FastAPI()
 origins = [
     "http://localhost:3000",
     # Remplace par ton URL Vercel une fois générée
-    "https://ton-nom-de-projet.vercel.app",
+    "https://simulateur-pr-t-intelligent.vercel.app",
 ]
 
 app.add_middleware(
