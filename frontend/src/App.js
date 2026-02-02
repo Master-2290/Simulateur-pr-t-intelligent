@@ -130,7 +130,10 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [currentSimId, setCurrentSimId] = useState(null); // Stockage de l'ID dynamique
 
-  const BASE_URL = "http://localhost:8000";
+  const BASE_URL =
+    window.location.hostname === "localhost"
+      ? "http://localhost:8000"
+      : "https://simulateur-pr-t-intelligent.onrender.com";
 
   const [refreshKey, setRefreshKey] = useState(0);
 

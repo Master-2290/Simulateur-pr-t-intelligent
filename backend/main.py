@@ -30,9 +30,16 @@ def get_db():
 
 app = FastAPI()
 
+origins = [
+    "http://localhost:3000",
+    # Remplace par ton URL Vercel une fois générée
+    "https://ton-nom-de-projet.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
